@@ -146,55 +146,6 @@ std::string formatLocalTimeMs(std::chrono::system_clock::time_point tp) {
   return std::string(withFraction);
 }
 
-class TcpServer;  // forward declaration for runServerSession
-
-template <typename Processor>
-void runServerSession(const std::string& name,
-                      const SessionEndpoint& endpoint,
-                      const std::filesystem::path& streamPath,
-                      const std::filesystem::path& rawPath,
-                      Processor processor) {
-  using namespace std::chrono_literals;
-
-  std::ofstream streamOut(streamPath, std::ios::trunc);
-  std::ofstream rawOut(rawPath, std::ios::trunc);
-
-  std::mutex rawMutex;
-  std::atomic<std::uint64_t> count{0};
-
-  std::thread heartbeat([&]() {
-    while (true) {
-      std::this_thread::sleep_for(5s);
-      std::lock_guard<std::mutex> lock(rawMutex);
-      const auto now = std::chrono::system_clock::now();
-      rawOut << '<' << formatLocalTimeMs(now)
-             << ">Heartbeat : processed " << count.load()
-             << " messages, waiting for new messages" << '\n';
-      rawOut.flush();
-      streamOut.flush();
-    }
-  });
-  heartbeat.detach();
-
-  TcpServer server(endpoint.host, endpoint.port);
-
-  std::cout << name << " session listening on "
-            << (endpoint.host.empty() ? "0.0.0.0" : endpoint.host) << ':'
-            << endpoint.port << " writing to " << streamPath << '\n';
-
-  server.serve([&](const std::string& message) {
-    const auto now = std::chrono::system_clock::now();
-    {
-      std::lock_guard<std::mutex> lock(rawMutex);
-      rawOut << '<' << formatLocalTimeMs(now) << ">Incoming : " << message
-             << '\n';
-    }
-    ++count;
-    const auto ts = formatTimestamp(now);
-    processor(message, ts, streamOut);
-  });
-}
-
 static std::string trim(std::string_view value) {
   const auto begin = value.find_first_not_of(" \t\r\n");
   if (begin == std::string_view::npos) {
@@ -424,6 +375,53 @@ class TcpServer {
 
   SocketHandle listener_{InvalidSocket};
 };
+
+template <typename Processor>
+void runServerSession(const std::string& name,
+                      const SessionEndpoint& endpoint,
+                      const std::filesystem::path& streamPath,
+                      const std::filesystem::path& rawPath,
+                      Processor processor) {
+  using namespace std::chrono_literals;
+
+  std::ofstream streamOut(streamPath, std::ios::trunc);
+  std::ofstream rawOut(rawPath, std::ios::trunc);
+
+  std::mutex rawMutex;
+  std::atomic<std::uint64_t> count{0};
+
+  std::thread heartbeat([&]() {
+    while (true) {
+      std::this_thread::sleep_for(5s);
+      std::lock_guard<std::mutex> lock(rawMutex);
+      const auto now = std::chrono::system_clock::now();
+      rawOut << '<' << formatLocalTimeMs(now)
+             << ">Heartbeat : processed " << count.load()
+             << " messages, waiting for new messages" << '\n';
+      rawOut.flush();
+      streamOut.flush();
+    }
+  });
+  heartbeat.detach();
+
+  TcpServer server(endpoint.host, endpoint.port);
+
+  std::cout << name << " session listening on "
+            << (endpoint.host.empty() ? "0.0.0.0" : endpoint.host) << ':'
+            << endpoint.port << " writing to " << streamPath << '\n';
+
+  server.serve([&](const std::string& message) {
+    const auto now = std::chrono::system_clock::now();
+    {
+      std::lock_guard<std::mutex> lock(rawMutex);
+      rawOut << '<' << formatLocalTimeMs(now) << ">Incoming : " << message
+             << '\n';
+    }
+    ++count;
+    const auto ts = formatTimestamp(now);
+    processor(message, ts, streamOut);
+  });
+}
 
 }  // namespace
 
