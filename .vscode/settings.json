@@ -1,0 +1,11 @@
+{
+  "cmake.generator": "Visual Studio 18 2022",
+  "cmake.configureArgs": [
+    "-A",
+    "x64"
+  ],
+  "cmake.preferredGenerators": [
+    "Visual Studio 18 2022",
+    "Ninja"
+  ]
+}
