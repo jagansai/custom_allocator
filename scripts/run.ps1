@@ -41,18 +41,23 @@ for ($i = 1; $i -le $Runs; $i++)
         $firstSent = 'Arena'
     } elseif ($firstConnectLine -and $firstConnectLine -match 'heap session') {
         $firstSent = 'Heap'
+    } elseif ($firstConnectLine -and $firstConnectLine -match 'pool session') {
+        $firstSent = 'Pool'
     } else {
         $firstSent = 'Unknown'
     }
 
-    # parse Arena/Heap timing lines
+    # parse Arena/Heap/Pool timing lines
     $arenaLine = $output | Where-Object { $_ -match '^Arena:' } | Select-Object -Last 1
     $heapLine  = $output | Where-Object { $_ -match '^Heap:' }  | Select-Object -Last 1
+    $poolLine  = $output | Where-Object { $_ -match '^Pool:' }  | Select-Object -Last 1
 
     $arenaMessages = $null
     $arenaTime = $null
     $heapMessages = $null
     $heapTime = $null
+    $poolMessages = $null
+    $poolTime = $null
 
     if ($arenaLine -and $arenaLine -match 'Arena:\s+(\d+)\s+messages\s+over\s+([0-9.]+)\s+seconds') {
         $arenaMessages = [int]$matches[1]
@@ -64,18 +69,30 @@ for ($i = 1; $i -le $Runs; $i++)
         $heapTime = [double]$matches[2]
     }
 
+    if ($poolLine -and $poolLine -match 'Pool:\s+(\d+)\s+messages\s+over\s+([0-9.]+)\s+seconds') {
+        $poolMessages = [int]$matches[1]
+        $poolTime = [double]$matches[2]
+    }
+
     if ($arenaTime -ne $null -and $heapTime -ne $null) {
-        if ($arenaTime -lt $heapTime) {
-            $winner = 'Arena'
-        } elseif ($heapTime -lt $arenaTime) {
+        # Determine overall winner among arena, heap, and optional pool
+        $winner = 'Tie'
+        $bestTime = $arenaTime
+        $winner = 'Arena'
+        if ($heapTime -lt $bestTime) {
+            $bestTime = $heapTime
             $winner = 'Heap'
-        } else {
-            $winner = 'Tie'
+        }
+        if ($poolTime -ne $null -and $poolTime -lt $bestTime) {
+            $bestTime = $poolTime
+            $winner = 'Pool'
         }
 
-        $messages = if ($arenaMessages -ne $null) { $arenaMessages } else { $heapMessages }
+        $messages = if ($arenaMessages -ne $null) { $arenaMessages }
+                    elseif ($heapMessages -ne $null) { $heapMessages }
+                    else { $poolMessages }
 
-        $results += [pscustomobject]@{
+        $obj = [pscustomobject]@{
             Run        = $i
             Messages   = $messages
             FirstSent  = $firstSent
@@ -83,6 +100,12 @@ for ($i = 1; $i -le $Runs; $i++)
             HeapTimeS  = [math]::Round($heapTime, 3)
             Winner     = $winner
         }
+
+        if ($poolTime -ne $null) {
+            Add-Member -InputObject $obj -NotePropertyName PoolTimeS -NotePropertyValue ([math]::Round($poolTime, 3))
+        }
+
+        $results += $obj
     }
 
     # after python script ends, stop the server
@@ -93,7 +116,11 @@ for ($i = 1; $i -le $Runs; $i++)
 if ($results.Count -gt 0) {
     "" | Out-Host
     "Summary (per run):" | Out-Host
-    $results | Format-Table Run, Messages, FirstSent, ArenaTimeS, HeapTimeS, Winner -AutoSize | Out-Host
+    if ($results[0].PSObject.Properties.Name -contains 'PoolTimeS') {
+        $results | Format-Table Run, Messages, FirstSent, ArenaTimeS, HeapTimeS, PoolTimeS, Winner -AutoSize | Out-Host
+    } else {
+        $results | Format-Table Run, Messages, FirstSent, ArenaTimeS, HeapTimeS, Winner -AutoSize | Out-Host
+    }
 }
 
 

@@ -7,6 +7,9 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
+
+#include "string_pool.h"
 
 namespace fix_demo {
 
@@ -15,6 +18,10 @@ constexpr char SOH = '\x01';
 
 template <typename T>
 class ArenaOwned;
+
+// Forward declaration for the generic object pool RAII handle.
+template <typename T>
+class Pooled;
 
 // Round "value" up to the next multiple of "alignment" (power of two).
 inline size_t alignUp(size_t value, size_t alignment) {
@@ -162,6 +169,129 @@ class ArenaOwned {
   T* ptr_;
 };
 
+  // Generic object pool for reusing instances of T. Objects are
+  // constructed in-place inside the pool and returned to the pool
+  // when the corresponding Pooled<T> handle is destroyed or reset.
+  template <typename T>
+  class ObjectPool {
+   public:
+    ObjectPool() = default;
+
+    ObjectPool(const ObjectPool&) = delete;
+    ObjectPool& operator=(const ObjectPool&) = delete;
+
+    // Acquire a pooled object, constructing it with the given
+    // arguments if necessary. The returned Pooled<T> will
+    // automatically return the object to the pool on destruction.
+    template <typename... Args>
+    Pooled<T> acquire(Args&&... args) {
+      size_t index;
+      if (!freeList_.empty()) {
+        index = freeList_.back();
+        freeList_.pop_back();
+      } else {
+        index = slots_.size();
+        slots_.emplace_back();
+      }
+
+      Slot& slot = slots_[index];
+      T* ptr = new (slot.storage) T(std::forward<Args>(args)...);
+      slot.inUse = true;
+      return Pooled<T>(this, index, ptr);
+    }
+
+   private:
+    friend class Pooled<T>;
+
+    struct Slot {
+      alignas(T) unsigned char storage[sizeof(T)];
+      bool inUse = false;
+    };
+
+    void release(size_t index) noexcept {
+      Slot& slot = slots_[index];
+      if (slot.inUse) {
+        auto* ptr = reinterpret_cast<T*>(slot.storage);
+        ptr->~T();
+        slot.inUse = false;
+        freeList_.push_back(index);
+      }
+    }
+
+    std::vector<Slot> slots_;
+    std::vector<size_t> freeList_;
+  };
+
+  // RAII handle for an object allocated from ObjectPool<T>. Destroying
+  // or resetting the handle runs the object's destructor and returns
+  // the storage back to the pool for reuse.
+  template <typename T>
+  class Pooled {
+   public:
+    Pooled() noexcept = default;
+
+    Pooled(const Pooled&) = delete;
+    Pooled& operator=(const Pooled&) = delete;
+
+    Pooled(Pooled&& other) noexcept { moveFrom(std::move(other)); }
+
+    Pooled& operator=(Pooled&& other) noexcept {
+      if (this != &other) {
+        reset();
+        moveFrom(std::move(other));
+      }
+      return *this;
+    }
+
+    ~Pooled() { reset(); }
+
+    T* get() const noexcept { return ptr_; }
+    T& operator*() const noexcept { return *ptr_; }
+    T* operator->() const noexcept { return ptr_; }
+    explicit operator bool() const noexcept { return ptr_ != nullptr; }
+
+    // Release ownership and return the raw pointer without
+    // returning it to the pool. The caller becomes responsible
+    // for destroying the object.
+    T* release() noexcept {
+      T* tmp = ptr_;
+      pool_ = nullptr;
+      index_ = 0;
+      ptr_ = nullptr;
+      return tmp;
+    }
+
+    // Destroy the pooled object (if any) and return its storage
+    // to the underlying ObjectPool.
+    void reset() noexcept {
+      if (pool_ && ptr_) {
+        pool_->release(index_);
+      }
+      pool_ = nullptr;
+      ptr_ = nullptr;
+      index_ = 0;
+    }
+
+   private:
+    friend class ObjectPool<T>;
+
+    Pooled(ObjectPool<T>* pool, size_t index, T* ptr) noexcept
+        : pool_(pool), index_(index), ptr_(ptr) {}
+
+    void moveFrom(Pooled&& other) noexcept {
+      pool_ = other.pool_;
+      index_ = other.index_;
+      ptr_ = other.ptr_;
+      other.pool_ = nullptr;
+      other.ptr_ = nullptr;
+      other.index_ = 0;
+    }
+
+    ObjectPool<T>* pool_ = nullptr;
+    size_t index_ = 0;
+    T* ptr_ = nullptr;
+  };
+
 enum class Side : char { Buy = '1', Sell = '2' };
 
 // Simplified in-memory representation of a FIX NewOrderSingle.
@@ -185,7 +315,8 @@ struct NewOrderSingle {
   std::string arrivalTime;  // optional arrival timestamp for logging
 };
 
-inline std::string extractTagValue(std::string_view message, std::string_view tag) {
+inline std::string_view extractTagView(std::string_view message,
+                                       std::string_view tag) {
   std::string pattern;
   pattern.reserve(tag.size() + 1);
   pattern += tag;
@@ -199,7 +330,16 @@ inline std::string extractTagValue(std::string_view message, std::string_view ta
   if (value_end == std::string_view::npos) {
     value_end = message.size();
   }
-  return std::string(message.substr(value_begin, value_end - value_begin));
+  return message.substr(value_begin, value_end - value_begin);
+}
+
+inline std::string extractTagValue(std::string_view message,
+                                   std::string_view tag) {
+  const auto view = extractTagView(message, tag);
+  if (view.empty()) {
+    return {};
+  }
+  return std::string(view);
 }
 
 inline void populateNewOrder(NewOrderSingle& order, std::string_view message) {
@@ -242,26 +382,135 @@ inline ArenaOwned<NewOrderSingle> createOrderOnArena(ArenaAllocator& arena, std:
   return order;
 }
 
-inline std::string toJson(const NewOrderSingle& order) {
+// Variant of NewOrderSingle whose string fields are backed by a
+// StringPool and stored as std::string_view to avoid per-field
+// heap allocations.
+struct PooledNewOrderSingle {
+  std::string_view clOrdID;
+  std::string_view symbol;
+  Side side;
+  int quantity = 0;
+  double price = 0.0;
+  std::string_view account;
+  std::string_view orderType;
+  std::string_view timeInForce;
+  std::string_view transactTime;
+  std::string_view trader;
+  std::string_view firm;
+  std::string_view text;
+  std::string_view securityDesc;
+  std::string_view currency;
+  std::string arrivalTime;  // kept as std::string for convenience
+};
+
+inline void populateNewOrder(PooledNewOrderSingle& order,
+                             std::string_view message,
+                             StringPool& pool) {
+  order.clOrdID = pool.intern(extractTagView(message, "11"));
+  order.symbol = pool.intern(extractTagView(message, "48"));
+
+  const auto sideView = extractTagView(message, "54");
+  if (!sideView.empty()) {
+    order.side = Side(sideView.front());
+  }
+
+  const auto qtyView = extractTagView(message, "38");
+  if (!qtyView.empty()) {
+    order.quantity = std::stoi(std::string(qtyView));
+  }
+  const auto pxView = extractTagView(message, "44");
+  if (!pxView.empty()) {
+    order.price = std::stod(std::string(pxView));
+  }
+
+  order.account = pool.intern(extractTagView(message, "1"));
+  order.orderType = pool.intern(extractTagView(message, "40"));
+  order.timeInForce = pool.intern(extractTagView(message, "59"));
+  order.transactTime = pool.intern(extractTagView(message, "60"));
+  order.trader = pool.intern(extractTagView(message, "448"));
+  order.firm = pool.intern(extractTagView(message, "452"));
+  order.text = pool.intern(extractTagView(message, "58"));
+  order.securityDesc = pool.intern(extractTagView(message, "107"));
+  order.currency = pool.intern(extractTagView(message, "15"));
+}
+
+template <typename Order>
+inline std::string toJsonImpl(const Order& order) {
   // Single-line JSON object suitable for line-delimited logs.
-  std::string json = "{";
-  json += "\"clOrdID\": \"" + order.clOrdID + "\",";
-  json += " \"symbol\": \"" + order.symbol + "\",";
-  json += " \"side\": \"" + std::string(1, static_cast<char>(order.side)) + "\",";
-  json += " \"quantity\": " + std::to_string(order.quantity) + ",";
-  json += " \"price\": " + std::to_string(order.price) + ",";
-   json += " \"account\": \"" + order.account + "\",";
-   json += " \"orderType\": \"" + order.orderType + "\",";
-   json += " \"timeInForce\": \"" + order.timeInForce + "\",";
-   json += " \"transactTime\": \"" + order.transactTime + "\",";
-   json += " \"trader\": \"" + order.trader + "\",";
-   json += " \"firm\": \"" + order.firm + "\",";
-   json += " \"text\": \"" + order.text + "\",";
-   json += " \"securityDesc\": \"" + order.securityDesc + "\",";
-   json += " \"currency\": \"" + order.currency + "\",";
-  json += " \"arrivalTime\": \"" + order.arrivalTime + "\"";
-  json += "}";
+  std::string json;
+  json.reserve(256);
+
+  json += '{';
+  json += "\"clOrdID\": \"";
+  json.append(std::string_view(order.clOrdID));
+  json += "\",";
+
+  json += " \"symbol\": \"";
+  json.append(std::string_view(order.symbol));
+  json += "\",";
+
+  json += " \"side\": \"";
+  json.push_back(static_cast<char>(order.side));
+  json += "\",";
+
+  json += " \"quantity\": ";
+  json += std::to_string(order.quantity);
+  json += ",";
+
+  json += " \"price\": ";
+  json += std::to_string(order.price);
+  json += ",";
+
+  json += " \"account\": \"";
+  json.append(std::string_view(order.account));
+  json += "\",";
+
+  json += " \"orderType\": \"";
+  json.append(std::string_view(order.orderType));
+  json += "\",";
+
+  json += " \"timeInForce\": \"";
+  json.append(std::string_view(order.timeInForce));
+  json += "\",";
+
+  json += " \"transactTime\": \"";
+  json.append(std::string_view(order.transactTime));
+  json += "\",";
+
+  json += " \"trader\": \"";
+  json.append(std::string_view(order.trader));
+  json += "\",";
+
+  json += " \"firm\": \"";
+  json.append(std::string_view(order.firm));
+  json += "\",";
+
+  json += " \"text\": \"";
+  json.append(std::string_view(order.text));
+  json += "\",";
+
+  json += " \"securityDesc\": \"";
+  json.append(std::string_view(order.securityDesc));
+  json += "\",";
+
+  json += " \"currency\": \"";
+  json.append(std::string_view(order.currency));
+  json += "\",";
+
+  json += " \"arrivalTime\": \"";
+  json.append(std::string_view(order.arrivalTime));
+  json += "\"";
+
+  json += '}';
   return json;
+}
+
+inline std::string toJson(const NewOrderSingle& order) {
+  return toJsonImpl(order);
+}
+
+inline std::string toJson(const PooledNewOrderSingle& order) {
+  return toJsonImpl(order);
 }
 
 }  // namespace fix_demo

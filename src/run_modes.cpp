@@ -67,6 +67,25 @@ std::string processWithNew(const std::string& fixMessage,
   return json;
 }
 
+std::string processWithPool(const std::string& fixMessage,
+                            demo::ObjectPool<demo::PooledNewOrderSingle>& pool,
+                            demo::StringPool& stringPool,
+                            std::ostream* outputStream = nullptr,
+                            std::string_view arrivalTime = {}) {
+  auto order = pool.acquire();
+  demo::populateNewOrder(*order, fixMessage, stringPool);
+  if (!arrivalTime.empty()) {
+    order->arrivalTime = std::string(arrivalTime);
+  } else {
+    order->arrivalTime.clear();
+  }
+  const std::string json = demo::toJson(*order);
+  if (outputStream) {
+    (*outputStream) << json << '\n';
+  }
+  return json;
+}
+
 std::vector<std::string> loadFixMessages(const std::filesystem::path& path) {
   std::vector<std::string> messages;
   std::ifstream in(path);
@@ -104,6 +123,7 @@ struct SessionEndpoint {
 struct ServerConfig {
   SessionEndpoint arena;
   SessionEndpoint heap;
+  SessionEndpoint pool;
 };
 
 std::string formatTimestamp(std::chrono::system_clock::time_point tp) {
@@ -187,6 +207,11 @@ static ServerConfig loadServerConfig(const std::filesystem::path& path) {
           static_cast<uint16_t>(std::stoul(std::string(value)));
     } else if (key == "heap.session.host") {
       config.heap.host = std::string(value);
+    } else if (key == "pool.session.port") {
+      config.pool.port =
+          static_cast<uint16_t>(std::stoul(std::string(value)));
+    } else if (key == "pool.session.host") {
+      config.pool.host = std::string(value);
     }
   }
 
@@ -444,6 +469,8 @@ void StandaloneMode::run() const {
   }
 
   demo::ArenaAllocator arena(256 * 1024);
+  demo::ObjectPool<demo::PooledNewOrderSingle> pool;
+  demo::StringPool pooledStrings;
 
     const auto arenaRawPath =
       config_.outputDir /
@@ -459,6 +486,10 @@ void StandaloneMode::run() const {
 
   benchmark(messages,
             [&](const std::string& msg) { processWithNew(msg); }, "Heap");
+
+  benchmark(messages,
+            [&](const std::string& msg) { processWithPool(msg, pool, pooledStrings); },
+            "Pool");
 
   const auto arenaBatch = config_.outputDir / "arena_batch.json";
   const auto heapBatch = config_.outputDir / "heap_batch.json";
@@ -488,6 +519,7 @@ void ServerMode::run() const {
   const auto serverConfig = loadServerConfig(config_.serverConfig);
   const auto arenaEndpoint = serverConfig.arena;
   const auto heapEndpoint = serverConfig.heap;
+  const auto poolEndpoint = serverConfig.pool;
 
   const auto arenaPath =
       config_.outputDir /
@@ -496,12 +528,16 @@ void ServerMode::run() const {
       config_.outputDir /
       (allocatorLabel(AllocatorPolicy::Heap) + std::string("_stream.json"));
 
+  const auto poolPath = config_.outputDir / "pool_stream.json";
+
   const auto arenaRawPath =
       config_.outputDir /
       (allocatorLabel(AllocatorPolicy::Arena) + std::string("_raw.log"));
   const auto heapRawPath =
       config_.outputDir /
       (allocatorLabel(AllocatorPolicy::Heap) + std::string("_raw.log"));
+
+  const auto poolRawPath = config_.outputDir / "pool_raw.log";
 
   std::thread arenaThread([&, arenaEndpoint, arenaPath]() {
     demo::ArenaAllocator arena(256 * 1024);
@@ -519,9 +555,25 @@ void ServerMode::run() const {
                        processWithNew(msg, &out, ts);
                      });
   });
+  bool hasPool = poolEndpoint.port != 0;
+  std::thread poolThread;
+  if (hasPool) {
+    poolThread = std::thread([&, poolEndpoint, poolPath]() {
+      demo::ObjectPool<demo::PooledNewOrderSingle> pool;
+      demo::StringPool pooledStrings;
+      runServerSession("Pool", poolEndpoint, poolPath, poolRawPath,
+                       [&](const std::string& msg, const std::string& ts,
+                           std::ostream& out) {
+                         processWithPool(msg, pool, pooledStrings, &out, ts);
+                       });
+    });
+  }
 
   arenaThread.join();
   heapThread.join();
+  if (hasPool && poolThread.joinable()) {
+    poolThread.join();
+  }
 }
 
 std::unique_ptr<RunMode> makeRunMode(const RunConfig& config) {

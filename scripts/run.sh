@@ -16,7 +16,10 @@ messages=()
 first_sent=()
 arena_time=()
 heap_time=()
+pool_time=()
 winner=()
+
+has_pool=false
 
 for ((i=1; i<=RUNS; ++i)); do
   echo "Run #$i"
@@ -49,15 +52,18 @@ for ((i=1; i<=RUNS; ++i)); do
     first="Arena"
   elif echo "$first_line" | grep -qi 'heap session'; then
     first="Heap"
+  elif echo "$first_line" | grep -qi 'pool session'; then
+    first="Pool"
   else
     first="Unknown"
   fi
 
-  # Parse Arena/Heap timing lines
+  # Parse Arena/Heap/Pool timing lines
   arena_line=$(printf '%s\n' "$output" | grep -E '^Arena:' | tail -n 1 || true)
   heap_line=$(printf '%s\n' "$output" | grep -E '^Heap:'  | tail -n 1 || true)
+  pool_line=$(printf '%s\n' "$output" | grep -E '^Pool:'  | tail -n 1 || true)
 
-  a_msgs=""; a_time=""; h_msgs=""; h_time=""
+  a_msgs=""; a_time=""; h_msgs=""; h_time=""; p_msgs=""; p_time=""
 
   if [[ -n "$arena_line" ]]; then
     if [[ "$arena_line" =~ Arena:[[:space:]]+([0-9]+)[[:space:]]+messages[[:space:]]+over[[:space:]]+([0-9.]+)[[:space:]]+seconds ]]; then
@@ -73,11 +79,30 @@ for ((i=1; i<=RUNS; ++i)); do
     fi
   fi
 
+  if [[ -n "$pool_line" ]]; then
+    if [[ "$pool_line" =~ Pool:[[:space:]]+([0-9]+)[[:space:]]+messages[[:space:]]+over[[:space:]]+([0-9.]+)[[:space:]]+seconds ]]; then
+      p_msgs="${BASH_REMATCH[1]}"
+      p_time="${BASH_REMATCH[2]}"
+    fi
+  fi
+
   if [[ -n "$a_time" && -n "$h_time" ]]; then
     # Decide winner
-    win="Tie"
-    awk_out=$(awk -v a="$a_time" -v h="$h_time" 'BEGIN { if (a < h) print "Arena"; else if (h < a) print "Heap"; else print "Tie"; }')
-    win="$awk_out"
+    if [[ -n "$p_time" ]]; then
+      # Arena vs Heap vs Pool
+      awk_out=$(awk -v a="$a_time" -v h="$h_time" -v p="$p_time" 'BEGIN {
+        if (a < h && a < p) print "Arena";
+        else if (h < a && h < p) print "Heap";
+        else if (p < a && p < h) print "Pool";
+        else print "Tie";
+      }')
+      win="$awk_out"
+      has_pool=true
+    else
+      # Arena vs Heap only
+      awk_out=$(awk -v a="$a_time" -v h="$h_time" 'BEGIN { if (a < h) print "Arena"; else if (h < a) print "Heap"; else print "Tie"; }')
+      win="$awk_out"
+    fi
 
     msg_count="$a_msgs"
     if [[ -z "$msg_count" ]]; then
@@ -89,6 +114,7 @@ for ((i=1; i<=RUNS; ++i)); do
     first_sent+=("$first")
     arena_time+=("$a_time")
     heap_time+=("$h_time")
+    pool_time+=("$p_time")
     winner+=("$win")
   fi
 
@@ -101,9 +127,17 @@ done
 
 if (( ${#runs[@]} > 0 )); then
   printf "\nSummary (per run):\n"
-  printf "%-4s %-8s %-10s %-11s %-11s %-6s\n" "Run" "Messages" "FirstSent" "ArenaTimeS" "HeapTimeS" "Winner"
-  for idx in "${!runs[@]}"; do
-    printf "%-4s %-8s %-10s %-11s %-11s %-6s\n" \
-      "${runs[$idx]}" "${messages[$idx]}" "${first_sent[$idx]}" "${arena_time[$idx]}" "${heap_time[$idx]}" "${winner[$idx]}"
-  done
+  if [[ "$has_pool" == true ]]; then
+    printf "%-4s %-8s %-10s %-11s %-11s %-11s %-6s\n" "Run" "Messages" "FirstSent" "ArenaTimeS" "HeapTimeS" "PoolTimeS" "Winner"
+    for idx in "${!runs[@]}"; do
+      printf "%-4s %-8s %-10s %-11s %-11s %-11s %-6s\n" \
+        "${runs[$idx]}" "${messages[$idx]}" "${first_sent[$idx]}" "${arena_time[$idx]}" "${heap_time[$idx]}" "${pool_time[$idx]}" "${winner[$idx]}"
+    done
+  else
+    printf "%-4s %-8s %-10s %-11s %-11s %-6s\n" "Run" "Messages" "FirstSent" "ArenaTimeS" "HeapTimeS" "Winner"
+    for idx in "${!runs[@]}"; do
+      printf "%-4s %-8s %-10s %-11s %-11s %-6s\n" \
+        "${runs[$idx]}" "${messages[$idx]}" "${first_sent[$idx]}" "${arena_time[$idx]}" "${heap_time[$idx]}" "${winner[$idx]}"
+    done
+  fi
 fi

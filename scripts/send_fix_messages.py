@@ -128,7 +128,7 @@ def compute_duration_from_stream(stream_path: Path) -> float | None:
     return (last_ts - first_ts).total_seconds()
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Send FIX messages to arena and heap sessions")
+    parser = argparse.ArgumentParser(description="Send FIX messages to arena, heap, and optional pool sessions")
     _ = parser.add_argument(
         "--config",
         dest="config",
@@ -147,7 +147,7 @@ def main() -> None:
         default="output",
         help=(
             "Directory where server writes logs (arena_raw.log, heap_raw.log, "
-            "arena_stream.json, heap_stream.json). Default: output"
+            "arena_stream.json, heap_stream.json, optional pool_* files). Default: output"
         ),
     )
     args = parser.parse_args()
@@ -167,33 +167,48 @@ def main() -> None:
         arena_port = int(props["arena.session.port"])
         heap_host = props.get("heap.session.host", "127.0.0.1")
         heap_port = int(props["heap.session.port"])
+        pool_host = props.get("pool.session.host", "127.0.0.1")
+        pool_port = int(props["pool.session.port"])
     except KeyError as exc:
         raise SystemExit(f"Missing required config key: {exc}") from exc
 
-    # First push all messages to the arena session, then to the heap session.
-    allocators = [AllocatorConfig(arena_host, arena_port, "arena"), AllocatorConfig(heap_host, heap_port, "heap")]
+    # Push all messages to the configured sessions in random order.
+    allocators = [
+        AllocatorConfig(arena_host, arena_port, "arena"),
+        AllocatorConfig(heap_host, heap_port, "heap"),
+        AllocatorConfig(pool_host, pool_port, "pool")
+    ]
+    
     random.shuffle(allocators)
     for allocator in allocators:
         send_messages(allocator.host, allocator.port, messages, label=allocator.label)
 
-    # Wait until both arena and heap have reported processing the full batch.
+    # Wait until all configured sessions have reported processing the full batch.
     arena_raw = log_dir / "arena_raw.log"
     heap_raw = log_dir / "heap_raw.log"
+    pool_raw = log_dir / "pool_raw.log"
     expected = len(messages)
     wait_for_log_completion(arena_raw, expected, label="arena")
     wait_for_log_completion(heap_raw, expected, label="heap")
 
+    if pool_host is not None and pool_port is not None:
+        wait_for_log_completion(pool_raw, expected, label="pool")
+
     # Compute timing based on arrivalTime in the JSON stream logs.
     arena_stream = log_dir / "arena_stream.json"
     heap_stream = log_dir / "heap_stream.json"
+    pool_stream = log_dir / "pool_stream.json"
 
     arena_duration = compute_duration_from_stream(arena_stream)
     heap_duration = compute_duration_from_stream(heap_stream)
+    pool_duration = compute_duration_from_stream(pool_stream)
 
     if arena_duration is not None:
         print(f"Arena: {expected} messages over {arena_duration:.3f} seconds")
     if heap_duration is not None:
         print(f"Heap:  {expected} messages over {heap_duration:.3f} seconds")
+    if pool_duration is not None:
+        print(f"Pool:  {expected} messages over {pool_duration:.3f} seconds")
 
 
 if __name__ == "__main__":
