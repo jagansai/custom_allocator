@@ -153,6 +153,15 @@ struct NewOrderSingle {
   Side side;
   int quantity = 0;
   double price = 0.0;
+  std::string account;
+  std::string orderType;
+  std::string timeInForce;
+  std::string transactTime;
+  std::string trader;
+  std::string firm;
+  std::string text;
+  std::string securityDesc;
+  std::string currency;
   std::string arrivalTime;  // optional arrival timestamp for logging
 };
 
@@ -188,6 +197,17 @@ inline void populateNewOrder(NewOrderSingle& order, std::string_view message) {
   if (!px.empty()) {
     order.price = std::stod(px);
   }
+
+  // Additional optional fields to make the message larger
+  order.account = extractTagValue(message, "1");
+  order.orderType = extractTagValue(message, "40");
+  order.timeInForce = extractTagValue(message, "59");
+  order.transactTime = extractTagValue(message, "60");
+  order.trader = extractTagValue(message, "448");
+  order.firm = extractTagValue(message, "452");
+  order.text = extractTagValue(message, "58");
+  order.securityDesc = extractTagValue(message, "107");
+  order.currency = extractTagValue(message, "15");
 }
 
 inline std::unique_ptr<NewOrderSingle> createOrderOnHeap(std::string_view message) {
@@ -210,6 +230,15 @@ inline std::string toJson(const NewOrderSingle& order) {
   json += " \"side\": \"" + std::string(1, static_cast<char>(order.side)) + "\",";
   json += " \"quantity\": " + std::to_string(order.quantity) + ",";
   json += " \"price\": " + std::to_string(order.price) + ",";
+   json += " \"account\": \"" + order.account + "\",";
+   json += " \"orderType\": \"" + order.orderType + "\",";
+   json += " \"timeInForce\": \"" + order.timeInForce + "\",";
+   json += " \"transactTime\": \"" + order.transactTime + "\",";
+   json += " \"trader\": \"" + order.trader + "\",";
+   json += " \"firm\": \"" + order.firm + "\",";
+   json += " \"text\": \"" + order.text + "\",";
+   json += " \"securityDesc\": \"" + order.securityDesc + "\",";
+   json += " \"currency\": \"" + order.currency + "\",";
   json += " \"arrivalTime\": \"" + order.arrivalTime + "\"";
   json += "}";
   return json;

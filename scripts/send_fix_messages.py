@@ -1,12 +1,23 @@
 import argparse
+from cProfile import label
+from dataclasses import dataclass
 import json
+from platform import system
+import random
 import re
 import socket
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Tuple
 
+
+@dataclass
+class AllocatorConfig:
+    host: str
+    port: int
+    label: str
 
 def parse_properties(path: Path) -> Dict[str, str]:
     props: Dict[str, str] = {}
@@ -116,7 +127,6 @@ def compute_duration_from_stream(stream_path: Path) -> float | None:
 
     return (last_ts - first_ts).total_seconds()
 
-
 def main() -> None:
     parser = argparse.ArgumentParser(description="Send FIX messages to arena and heap sessions")
     _ = parser.add_argument(
@@ -161,8 +171,10 @@ def main() -> None:
         raise SystemExit(f"Missing required config key: {exc}") from exc
 
     # First push all messages to the arena session, then to the heap session.
-    send_messages(arena_host, arena_port, messages, label="arena")
-    send_messages(heap_host, heap_port, messages, label="heap")
+    allocators = [AllocatorConfig(arena_host, arena_port, "arena"), AllocatorConfig(heap_host, heap_port, "heap")]
+    random.shuffle(allocators)
+    for allocator in allocators:
+        send_messages(allocator.host, allocator.port, messages, label=allocator.label)
 
     # Wait until both arena and heap have reported processing the full batch.
     arena_raw = log_dir / "arena_raw.log"

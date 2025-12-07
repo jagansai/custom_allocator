@@ -58,8 +58,8 @@ The test harness lives primarily in [src/run_modes.cpp](src/run_modes.cpp) and [
   - For each session it writes:
     - JSON stream: `arena_stream.json` / `heap_stream.json` (one JSON object per line, including `arrivalTime`).
     - Raw FIX log: `arena_raw.log` / `heap_raw.log` with lines like:
-      - `<hh:mm:ss.sss>Incoming : <fix message>`
-      - `<hh:mm:ss.sss>Heartbeat : processed N messages, waiting for new messages>`
+      - `hh:mm:ss.sss Incoming : <fix message>`
+      - `hh:mm:ss.sss Heartbeat : processed N messages, waiting for new messages`
   - Heartbeats also periodically flush both JSON and raw logs.
 
 ## 4. How to Build
@@ -167,3 +167,22 @@ What it does:
   - Total duration for heap processing.
 
 This provides a simple, reproducible way to compare arena vs heap allocation under a realistic message load.
+
+## 8. Benchmark Results (2025-12-07)
+
+Using the server mode with the multi-run harness (`scripts/run.ps1` on Windows or `scripts/run.sh` on Linux), and a larger FIX message (additional fields such as account, order type, time-in-force, trader, firm, text, security description, and currency), a 10-run experiment with 100,000 messages per run produced the following summary:
+
+| Run | Messages | FirstSent | ArenaTimeS | HeapTimeS | Winner |
+|-----|----------|-----------|------------|-----------|--------|
+| 1   | 100000   | Arena     | 0.64       | 0.62      | Heap   |
+| 2   | 100000   | Arena     | 0.83       | 0.83      | Heap   |
+| 3   | 100000   | Arena     | 0.62       | 0.64      | Arena  |
+| 4   | 100000   | Heap      | 1.83       | 0.62      | Heap   |
+| 5   | 100000   | Heap      | 0.58       | 0.61      | Arena  |
+| 6   | 100000   | Heap      | 0.63       | 0.65      | Arena  |
+| 7   | 100000   | Heap      | 0.66       | 0.60      | Heap   |
+| 8   | 100000   | Arena     | 0.72       | 0.60      | Heap   |
+| 9   | 100000   | Arena     | 0.57       | 0.57      | Heap   |
+| 10  | 100000   | Arena     | 4.35       | 0.60      | Heap   |
+
+Observation: for this workload and implementation, the custom arena allocator does not show a performance advantage over regular heap allocation; in these runs, heap is often slightly faster, and the differences are small enough that other costs (parsing, JSON serialization, logging, scheduling) likely dominate. A future improvement may compare the actual JSON payloads (excluding the `arrivalTime` field) to verify that both allocators produce identical message content.

@@ -29,6 +29,7 @@ Makefile
 .vs/
 *.vcxproj*
 *.sln
+.vscode/
 
 # Python cache
 __pycache__/
