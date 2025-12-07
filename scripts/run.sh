@@ -24,7 +24,7 @@ has_pool=false
 for ((i=1; i<=RUNS; ++i)); do
   echo "Run #$i"
 
-  ./build-release/Release/fix_allocator_demo.exe \
+  ./build-release/fix_allocator_demo \
     --mode server \
     --server-config ./config/app.properties \
     --output-dir "$LOG_DIR" &

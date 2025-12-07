@@ -370,9 +370,6 @@ class TcpServer {
     while (true) {
       const int bytes =
           ::recv(client, buffer.data(), static_cast<int>(buffer.size()), 0);
-      if (bytes <= 0) {
-        break;
-      }
 
       backlog.append(buffer.data(), bytes);
 
