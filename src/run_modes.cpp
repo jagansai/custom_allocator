@@ -199,6 +199,7 @@ static ServerConfig loadServerConfig(const std::filesystem::path& path) {
   return config;
 }
 
+// Platform-neutral alias for a TCP socket handle and sentinel for invalid.
 #ifdef _WIN32
 using SocketHandle = SOCKET;
 constexpr SocketHandle InvalidSocket = INVALID_SOCKET;
@@ -207,6 +208,7 @@ using SocketHandle = int;
 constexpr SocketHandle InvalidSocket = -1;
 #endif
 
+// Close a socket handle on the current platform, ignoring InvalidSocket.
 static void closeSocket(SocketHandle socket) {
   if (socket == InvalidSocket) {
     return;
@@ -219,6 +221,7 @@ static void closeSocket(SocketHandle socket) {
 }
 
 #ifdef _WIN32
+// One-time Winsock startup/cleanup helper used by TcpServer on Windows.
 class WinSockInitializer {
  public:
   WinSockInitializer() {
@@ -233,6 +236,10 @@ class WinSockInitializer {
 };
 #endif
 
+// Minimal TCP server that listens on a single (host,port) and passes
+// newline-delimited messages to a user-provided handler. It accepts
+// one client at a time in a loop; each client connection can stream
+// many messages separated by '\n'.
 class TcpServer {
  public:
   TcpServer(const std::string& bindHost, uint16_t port) {
@@ -325,6 +332,10 @@ class TcpServer {
     return address;
   }
 
+  // Read data from a single client socket, accumulating into a
+  // small string buffer (backlog) and invoking the handler once
+  // for each complete line terminated by '\n'. Any trailing partial
+  // line is kept until more data arrives or the client closes.
   template <typename Handler>
   static void processClient(SocketHandle client, Handler handler) {
     std::string backlog;

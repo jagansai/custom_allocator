@@ -10,16 +10,22 @@
 
 namespace fix_demo {
 
+// Standard FIX field separator (Start of Heading, ASCII 0x01).
 constexpr char SOH = '\x01';
 
 template <typename T>
 class ArenaOwned;
 
+// Round "value" up to the next multiple of "alignment" (power of two).
 inline size_t alignUp(size_t value, size_t alignment) {
   const size_t mask = alignment - 1;
   return (value + mask) & ~mask;
 }
 
+// Simple bump-pointer arena that owns a contiguous buffer and
+// hands out memory sequentially. Individual objects are not freed;
+// instead the caller can reset the entire arena or reset back to
+// a previous "used" mark via ArenaScope.
 class ArenaAllocator {
 public:
   explicit ArenaAllocator(size_t capacity)
@@ -31,8 +37,10 @@ public:
   ArenaAllocator(const ArenaAllocator&) = delete;
   ArenaAllocator& operator=(const ArenaAllocator&) = delete;
 
+  // Discard all allocations made so far.
   void reset() noexcept { offset_ = 0; }
 
+  // Reset the arena back to a previously observed "used()" value.
   void resetTo(size_t used) noexcept {
     if (used <= capacity_) {
       offset_ = used;
@@ -40,12 +48,15 @@ public:
   }
 
 public:
+  // Allocate and construct a single T from the arena.
   template <typename T, typename... Args>
   T* create(Args&&... args) {
     void* raw = allocate(sizeof(T), alignof(T));
     return new (raw) T(std::forward<Args>(args)...);
   }
 
+  // Allocate and construct T, returning an ArenaOwned wrapper that
+  // will run the destructor when reset or destroyed.
   template <typename T, typename... Args>
   ArenaOwned<T> createOwned(Args&&... args) {
     return ArenaOwned<T>(create<T>(std::forward<Args>(args)...));
@@ -72,6 +83,9 @@ private:
   size_t offset_ = 0;
 };
 
+// RAII helper that remembers the arena's current "used()" value and
+// resets back to that mark when the scope ends, effectively rolling
+// back all allocations performed within the scope.
 class ArenaScope {
  public:
   explicit ArenaScope(ArenaAllocator& arena)
@@ -107,6 +121,9 @@ class ArenaScope {
   bool active_ = true;
 };
 
+// Lightweight owning wrapper for an object constructed in an
+// ArenaAllocator. It is responsible only for running the object's
+// destructor; the underlying memory is managed by the arena.
 template <typename T>
 class ArenaOwned {
  public:
@@ -147,6 +164,9 @@ class ArenaOwned {
 
 enum class Side : char { Buy = '1', Sell = '2' };
 
+// Simplified in-memory representation of a FIX NewOrderSingle.
+// Many of the string fields are parsed from FIX tags for the
+// purposes of exercising allocation and parsing.
 struct NewOrderSingle {
   std::string clOrdID;
   std::string symbol;
