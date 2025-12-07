@@ -21,7 +21,7 @@ for ($i = 1; $i -le $Runs; $i++)
 
     # wait a few seconds to ensure the server starts
     "Waiting for server to start..." | Out-Host
-    Start-Sleep -Seconds 3
+    Start-Sleep -Seconds 1
     
     # get the process ID of the server
     $serverProcess = Get-Process -Name "fix_allocator_demo" -ErrorAction SilentlyContinue
